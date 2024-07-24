@@ -1,4 +1,5 @@
 import numpy as np
+import graphviz
 
 class LinearRegression:
     def __init__(self):
@@ -279,10 +280,12 @@ class naiveBayes:
 
 
 class decisionTree:
-    def __init__(self,max_depth = 5, min_samples_split=2):
+    def __init__(self,max_depth = 5, min_samples_split=2,min_impurity_decrease=0.0):
         self.max_depth=max_depth
         self.min_samples_split=min_samples_split
+        self.min_impurity_decrease = min_impurity_decrease
         self.tree = None
+        self.feature_importances_ = None
         self.class_mapping = None # If the class labels are not sequential or do not start from 0, this would cause an issue.
 
     def fit(self,X,y):
@@ -292,6 +295,8 @@ class decisionTree:
         Parameters:
         X (numpy.ndarray): input shape (n_samples,n_features)
         """
+        self.n_features_ = X.shape[1]
+        self.feature_importances_ = np.zeros(self.n_features_)
         self.class_mapping = {cls: idx for idx, cls in enumerate(np.unique(y))}
         self.tree = self._growtree(X,y)
 
@@ -306,6 +311,12 @@ class decisionTree:
         numpy.ndarray: returns the label.
         """
         return np.array([self._predict(x, self.tree) for x in X])
+
+    def _gini(self,y):
+        m=len(y)
+        if m==0:
+            return 0
+        return 1.0 - sum((np.sum(y==c)/m)**2 for c in np.unique(y))
 
     def _split(self,X,y,idx,t):
         left= np.where(X[:,idx]<=t)
@@ -336,7 +347,7 @@ class decisionTree:
                 gini = (i* gini_left + (m-i)* gini_right)/m
                 if threshold[i] == threshold[i-1]:
                     continue
-                if gini < best_gini:
+                if gini < best_gini and (best_gini - gini) >= self.min_impurity_decrease:
                     best_gini = gini
                     best_t = (threshold[i] + threshold[i -1])/2
                     best_idx= idx
@@ -356,7 +367,8 @@ class decisionTree:
                     node["threshold"] = t
                     node["left"] = self._growtree(X_left,y_left,depth+1)
                     node["right"]= self._growtree(X_right,y_right,depth+1)
-          
+                    impurity_decrease = self._gini(y) - (len(y_left) / len(y) * self._gini(y_left) + len(y_right) / len(y) * self._gini(y_right))
+                    self.feature_importances_[idx] += impurity_decrease
         return node
 
     def _predict(self,x,tree):
@@ -380,3 +392,67 @@ class decisionTree:
         float: accuracy.
         """
         return sum(y_pred == y)/y.shape[0]
+
+    def feature_importances(self):
+        total_importance = np.sum(self.feature_importances_)
+        return self.feature_importances_ / total_importance if total_importance != 0 else np.zeros_like(self.feature_importances_)
+
+    def _export_graphviz(self,node,depth=0):
+        if threshold in node:
+            left_label = self._export_graphviz(node["left"],depth+1)
+            right_label = self._export_graphviz(node["right"],depth+1)
+            return 'feature_{feature_index} <= {threshold} ?\nleft -> {left_label}\nright -> {right_label}\n'.format(feature_index=node["feature_index"],
+                                                                                                                     threshold=node["threshold"],
+                                                                                                                     left_label=left_label,
+                                                                                                                     right_label=right_label
+                                                                                                                    )
+
+        else:
+            return "class: {}".format(node["Predicted"])   
+
+    def export_graphviz(self):
+        return "digraph tree: \n{}".format(self._export_graphiz(self.tree))        
+
+    def visualize(self, feature_names=None, class_names=None):
+        dot_data = self._to_graphviz(self.tree, feature_names, class_names)
+        graph = graphviz.Source(dot_data)
+        graph.render("decision_tree", format='png', cleanup=True)                     
+
+    def _to_graphviz(self, tree, feature_names=None, class_names=None, depth=0, node_id=0):
+        nodes = []
+        edges = []
+        self._add_node(tree, nodes, edges, feature_names, class_names, node_id)
+        dot_data = 'digraph Tree {\n'
+        dot_data += 'node [shape=box, style="filled", color="black", fontname="helvetica"] ;\n'
+        dot_data += 'edge [fontname="helvetica"] ;\n'
+        dot_data += '\n'.join(nodes)
+        dot_data += '\n'.join(edges)
+        dot_data += '\n}'
+        return dot_data  
+
+    def _add_node(self, tree, nodes, edges, feature_names, class_names, node_id, parent_id=None, label=None):
+        if "threshold" in tree:
+            feature = feature_names[tree["feature_index"]] if feature_names else f'X[{tree["feature_index"]}]'
+            nodes.append(f'{node_id} [label="{feature} <= {tree["threshold"]}\nGini={self._gini_str(tree)}", fillcolor="#e58139"] ;')
+            if parent_id is not None:
+                edges.append(f'{parent_id} -> {node_id} [labeldistance=2.5, labelangle=45, headlabel="{label}"] ;')
+            left_id = node_id + 1
+            right_id = self._add_node(tree["left"], nodes, edges, feature_names, class_names, left_id, node_id, 'yes')
+            return self._add_node(tree["right"], nodes, edges, feature_names, class_names, right_id, node_id, 'no')
+        else:
+            class_name = class_names[tree["Predicted"]] if class_names else tree["predicted_class"]
+            nodes.append(f'{node_id} [label="class: {class_name}", fillcolor="#39e581"] ;')
+            if parent_id is not None:
+                edges.append(f'{parent_id} -> {node_id} [labeldistance=2.5, labelangle=-45, headlabel="{label}"] ;')
+            return node_id + 1                                                          
+
+    def _gini_str(self, tree):
+        if "left" in tree:
+            if "y" in tree["left"]:  # Check if 'y' exists in the left subtree
+                return str(self._gini(tree["left"]["y"]))
+            else:
+                return "N/A"  # Handle the case where 'y' is missing
+        elif "y" in tree:  # Check if 'y' exists in the current node
+            return str(self._gini(tree["y"]))
+        else:
+            return "N/A"  # Handle the case where 'y' is missing
